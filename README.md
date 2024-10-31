@@ -4,14 +4,14 @@ C++ Log engine for embedded system
 ## What is it ?
 
 This is a log engine for an embedded system without direct output or access for storing its logs.
-It is used to store logs in a buffer that can be retrieve later on (for example when communicating).
+It is used to store logs in a buffer that can be retrieved later on (for example when communicating).
 
 ## Why use this ?
 
 On Internet Of Things gizmo, the usual behavior is to sleep to save power as network is usually
 a sparse availability.
 
-In that case, either the gizmo doesn't save its logs (meaning that debugging it is painful) since it'll not be able to transmit it.
+In that case, either the gizmo doesn't save its logs (meaning that debugging is painful) since it'll not be able to transmit it.
 Either the gizmo saves its log (in memory or flash).
 
 Flash write cycles are limited, so only the very important logs will consume the precious cycles, making debugging still hard to perform.
@@ -34,8 +34,8 @@ Instead of being saved as a human readable format (understand: UTF8 string), the
 This library is still using memory to save the logs. But unlike the usual storage of `const char array[]`, this requires less memory so it's possible to fit this buffer
 in special RAM area that is kept powered on (many microcontroller have such, size limited, memory that can be retained while sleeping).
 
-In order to achieve printf compatibility and limit the size of the library, the library dumping code (if built in), will use snprintf to generate the output string.
-Some microcontroller includes snprintf in their ROM code, so it's a zero cost downside, but some don't (in that case, the library will depend on a snprintf implementation).
+In order to achieve printf compatibility and limit the size of the library, the library dumping code (if built in), will use `snprintf` to generate the output string.
+Some microcontroller includes `snprintf` in their ROM code, so it's a zero cost downside, but some don't (in that case, the library will depend on a `snprintf`  implementation supporting the format you're using).
 
 The format argument of the log being compile time parsed, it's not possible to generate this format argument dynamically. This is rarely the case in practice.
 
@@ -68,7 +68,7 @@ int main()
     // So first, let's define some module your application is using
     enum MyApplicationModule
     {
-        Network = 0x0004,
+        Network = 0x0004,  // Don't use bit 0 and bit 1, they are reserved in the library
         Power   = 0x0008,
         ADC     = 0x0010,
         Nuclear = 0x0020,
@@ -77,7 +77,7 @@ int main()
     // Tell the log engine what module you want to store
     Log::logMask = Log::CustomMask | Network | Power | ADC ;
     // Then use log with modules
-    logm(Nuclear, "This log will not be saved, since it doesn't match the mask: runtime to launch: %d", 0);
+    logm(Nuclear, "This log will not be saved, since it doesn't match the mask");
     // This log will be saved (Error and Warning logs are always saved)
     logm(Log::Error, "Sorry, it's too late to cancel the launch, %s", "Adam");
     // This log will be saved too, it matches your own mask, with file and line number
@@ -121,12 +121,42 @@ int main()
 }
 ```
 
+### Error handling
+
+With the magic of C++, you can now have this:
+```cpp
+int main(...)
+{
+    logf("We know that the area of a circle of radius %gmm2 is %gmm since %.*s", 3, 3.1415 * 3 * 3, "Pythagorus");
+}
+
+$ make
+In file included from main.cpp:4:
+../include/log.hpp: In instantiation of 'void CompileTime::LogFormatter<string>::storeArguments(Args&& ...) [with Args = {int, double, const char*}; auto string = CompileTime::str<69>{"We know that the area of a circle of radius %gmm2 is %gmm since %.*s"}]':
+../include/log.hpp:954:147:   required from 'CompileTime::LogFormatter<string>::LogFormatter(const CompileTime::sourceloc&, Args ...) [with Args = {int, double, const char*}; auto string = CompileTime::str<69>{"We know that the area of a circle of radius %gmm2 is %gmm since %.*s"}; CompileTime::sourceloc = std::source_location]'
+  954 |         LogFormatter(const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, false, &loc) { storeArguments(std::forward<Args>(args)...); }
+      |                                                                                                                                     ~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+main.cpp:70:5:   required from here
+ 1069 | #define logf(fmt, ...)              CompileTime::LogFormatter<CompileTime::str{fmt}>{CompileTime::sourceloc::current(), __VA_ARGS__}
+      |                                                                                                                                    ^
+../include/log.hpp:933:39: error: static assertion failed: The number of arguments in the format specifier doesn't match the number of arguments passed in
+  933 |             static_assert(expArgCount == sizeof...(Args), "The number of arguments in the format specifier doesn't match the number of arguments passed in");
+      |                           ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~
+../include/log.hpp:933:39: note: the comparison reduces to '(4 == 3)'
+../include/log.hpp:934:32: error: static assertion failed: The expected arguments doesn't match those in the format specifier
+  934 |             static_assert(std::is_same_v<std::decay_t<decltype(argList)>, decltype(SpecifiersTable<N>::getLooselyTypedArguments(impl_string, std::make_index_sequence<N>{}))>, "The expected arguments doesn't match those in the format specifier");
+      |                           ~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../include/log.hpp:934:32: note: 'std::is_same_v<CompileTime::TypeList<int, double, void*>, CompileTime::TypeList<double, double, int, void*> >' evaluates to false
+```
+
+The error message from the compiler give the reason why it failed, the number of argument isn't good (expecting 4 arguments, 3 given) and the argument type isn't matching either (the first expected argument is an double, a int was given). While the former error is easy to spot, the latter would have been silently accepted with printf and the resulting code would have **crashed** at runtime.
+
 ## Configuration
 
 This library depends on few configurable variable. Those are:
 
 ### RingBuffer size
-This is the size, in bytes, of the circular buffer for storing log items. Usually, 512 bytes is enough to store ~2000 lines of logs, which might be more than enough for your application. It must be a power of 2 (since the ring buffer use the & operator as a modulo to avoid a division)
+This is the size, in bytes, of the circular buffer for storing log items. Usually, 512 bytes is enough to store ~2000 lines of logs, which might be more than enough for your application. It must be a power of 2 (since the ring buffer use `& (size-1)` operation as a modulo to avoid a division)
 ```cpp
 #define LogRingBufferSize 512
 ```
@@ -137,7 +167,7 @@ By default, when the ring buffer is full, the oldest log items are *deleted* (co
 
 However, this implies some code to parse the log's format, in order to extract the arguments that were saved in the buffer. If you are really constrainted by the library binary's size in flash, you might want to disable this feature and simply let the system fails to store new logs when it's full.
 
-NOTE: If you consume the logs with `dumpLog`, the old logs are *deleted*, so if you application has a way to dump its log periodically, this might be interesting as well.
+NOTE: If you consume the logs with `dumpLog`, the old logs are *deleted*, so if you application has a way to dump its log periodically, this might be enough.
 
 ```cpp
 #define DeleteOldLogsWhenFull 1

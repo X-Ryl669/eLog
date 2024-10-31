@@ -65,5 +65,6 @@ int main()
     while (CompileTime::dumpLog([&combinedSize](const char * str, uint32 mask) { combinedSize += strlen(str)+1; printf("%s\n", str); })) {}
 
     printf("Log compression size: %u/%u = %.2f%%\n", storedLogSize, combinedSize, (float)storedLogSize * 100 / combinedSize);
+
     return 0;
 }
