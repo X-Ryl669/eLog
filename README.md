@@ -26,7 +26,7 @@ Instead of being saved as a human readable format (understand: UTF8 string), the
 2. Arguments are length encoded (so small number only takes a single byte, instead of 4 for a 32 bits integer)
 3. Format specifier is checked at compile time (unlike printf and other), so a wrong format won't compile, instead of causing a runtime crash
 3. Decoding code can be avoided if it can be done by the log consumer (for example, on a web frontend), thus log saving is size limited and fast
-4. Built to be completely compatible with printf like format specified (unlike std::fmt that accept any type). This limits the number of types to save in the buffer and hence the code size.
+4. Built to be completely compatible with printf like format specifier (unlike std::fmt that accept any type). This limits the number of types to save in the buffer and hence the code size.
 5. The log encoding and saving doesn't use heap memory. Decoding code only use heap when encoutering runtime string, since strings aren't saved with null terminating byte in the log buffer.
 6. The library is small size (less than 1000 line of code), so it's possible to embed everywhere. On amd64 system, it compiles to only 7KB of code or 6.5KB of code if not including the decoding code.
 
@@ -35,7 +35,7 @@ This library is still using memory to save the logs. But unlike the usual storag
 in special RAM area that is kept powered on (many microcontroller have such, size limited, memory that can be retained while sleeping).
 
 In order to achieve printf compatibility and limit the size of the library, the library dumping code (if built in), will use `snprintf` to generate the output string.
-Some microcontroller includes `snprintf` in their ROM code, so it's a zero cost downside, but some don't (in that case, the library will depend on a `snprintf`  implementation supporting the format you're using).
+Some microcontroller includes `snprintf` in their ROM code, so it's a zero cost downside, but some don't (in that case, the library will depend on a `snprintf` implementation supporting the format you're using).
 
 The format argument of the log being compile time parsed, it's not possible to generate this format argument dynamically. This is rarely the case in practice.
 
