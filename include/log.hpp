@@ -25,6 +25,12 @@ typedef std::uint16_t   uint16;
 #ifndef DeleteOldLogsWhenFull
     #define DeleteOldLogsWhenFull   1
 #endif
+/** Define a strategy for log storage.
+    By default, the log header doesn't contain the stored size for the log and its arguments. This saves memory in the ring buffer, but when
+    deleting logs, it means parsing the log format line to skip the arguments to find the next log position (so it has a cost in binary code size).
+    If defined to a unsigned type, it will store the size for the log and its arguments after the header allowing to skip the format line parsing (binary code saving)
+    at the cost of the given type storage in memory. */
+#define StoreLogSizeType           uint8
 /** Define the error strategy when a log can't be saved in the log buffer.
     By default, it calls a function in Log namespace with signature "void errorStoringArgumentsFor(const char* format)" is called
     If set to 1, an exception Log::Exception(const char* format) is thrown instead */
@@ -160,8 +166,12 @@ namespace Log
         inline uint32 freeSize() const { return sm1 - getSize(); }
         /** Fetch the current read position (used to restore the read pointer later on on rollback) */
         inline uint32 fetchReadPos() const { return r; }
+        /** Fetch the current read position (used to restore the read pointer later on on rollback) */
+        inline uint32 fetchWritePos() const { return w; }
         /** Rollback with the saved read position */
         inline void rollback(const uint32 readPos) { if (readPos >= sm1) return; r = readPos; }
+        /** Rollback the saved write position */
+        inline void rollbackWrite(const uint32 writePos) { if (writePos >= sm1) return; w = writePos; }
         /** Check if the buffer is full (and, if configured to do so, clean the buffer until there's enough free space) */
         bool canFit(const uint32 size)
         {
@@ -240,11 +250,15 @@ namespace Log
             uint8 size = encode_i64(buf, i);
             return save(buf, size);
         }
-        /** Save a string to the buffer */
+        /** Save a string to the buffer
+            @param str  A pointer on the C string to save
+            @param len  If non zero, contains the actual number of bytes to save (don't include the final NUL)
+                        Else, compute the string length from the actual string size. */
         bool saveString(const char * str, std::size_t len = 0)
         {
             if (!len) len = strlen(str);
-            return save(len) && save((const uint8*)str, len);
+            uint8 c = 0;
+            return save((const uint8*)str, len) && save(&c, 1);
         }
         /** Save a pointer without VLC */
         bool save(const void * ptr)
@@ -305,21 +319,24 @@ namespace Log
             i = static_cast<std::decay_t<decltype(i)>>(r);
             return true;
         }
-        /** Load a string from the buffer */
+        /** Load a string from the buffer
+            @param str  If not null, will copy the C string into (including the terminating NUL byte)
+            @param len  On output, will be filled with the number of bytes required to load this string, including the terminating NUL byte */
         bool loadString(char * str, std::size_t & len)
         {
             uint32 rp = r;
-            if (!load(len) || len > getSize()) return false;
-            if (!str) {
-                // Need to revert the previous load
-                r = rp;
-                return true;
-            }
-            const uint8 * head = 0, * tail = 0;
-            uint32 sh = 0, st = 0;
-            if (!load(len, head, sh, tail, st)) return false;
-            memcpy(str, head, sh);
-            memcpy(str + sh, tail, st);
+            // Find length first
+            for (len = 0; ((r + len) & sm1) != w; len++)
+                if (buffer[(r+len) & sm1] == 0) break;
+
+            if (((len + r) & sm1) == w) return false;
+            len++; // Account for NUL byte
+            if (!str) return true;
+
+            for (std::size_t l = 0; l < len; l++)
+               str[l] = buffer[(r + l) & sm1];
+
+            r = (r + len) & sm1;
             return true;
         }
         /** Load a pointer without VLC decoding */
@@ -825,6 +842,13 @@ namespace CompileTime
         static constexpr std::size_t consumed = 1;
     };
     template <>
+    struct StoreArgumentInLogBuffer<char*>
+    {
+        template <typename A>
+        static constexpr bool store(const A & a) { char * t = (char*)std::get<0>(a); return Log::logBuffer.saveString(t, 0); }
+        static constexpr std::size_t consumed = 1;
+    };
+    template <>
     struct StoreArgumentInLogBuffer<TypeList<>>
     {
         template <typename A>
@@ -910,11 +934,21 @@ namespace CompileTime
             LineDump = saveLine ? 1 : 0;
             MaskType = mask < 4 ? mask : 3;
             saveFormat(str);
+#ifdef StoreLogSizeType
+            wp = Log::logBuffer.fetchWritePos(); // Save the current write position just after the item.
+#endif
             Log::logBuffer.saveType(*(const Log::LogItem *)this); // Save the log item first
+#ifdef StoreLogSizeType
+            StoreLogSizeType blank;
+            Log::logBuffer.saveType(blank); // This reserves the space for the storing the number of bytes used for this item in the buffer
+#endif
             if (loc) Log::logBuffer.save(Log::LogItem::computeAddress(loc->file_name())); // Don't save the string here since it should be in the binary, so only store its pointer
             if (loc && saveLine) Log::logBuffer.save(loc->line());
             if ((mask & 3) == 3) Log::logBuffer.save(mask);
         }
+#ifdef StoreLogSizeType
+        uint32 wp;
+#endif
     };
     template <const auto string>
     struct LogFormatter : public LogItemSaver
@@ -945,10 +979,26 @@ namespace CompileTime
                 Log::errorStoringArgumentsFor(string);
 #endif
             }
-        }
+#ifdef StoreLogSizeType
+            uint32 cp = Log::logBuffer.fetchWritePos();
+            // Ugly modulo calculus without a division
+            uint32 s = (cp + (Log::logBuffer.sm1 + 1) - wp - sizeof(Log::LogItem) - sizeof(StoreLogSizeType)) & Log::logBuffer.sm1;
+            if (s >= 1<<(sizeof(StoreLogSizeType)*8))
+            {   // Another ISSUE HERE, we can't store the actual consumed size in the given type
+                // So we decide to revert back the log item to before the saving, this log is lost anyway, we'll never be able to remove it afterward. Let's leave a trace here
+                Log::logBuffer.rollbackWrite(wp);
+  #if ThrowOnError == 1
+                throw Log::Exception("Log too large");
+  #else
+                Log::errorStoringArgumentsFor("Log too large");
+  #endif
+            }
+            Log::logBuffer.rollbackWrite((wp + sizeof(Log::LogItem)) & Log::logBuffer.sm1);
+            Log::logBuffer.saveType((StoreLogSizeType)s);
+            Log::logBuffer.rollbackWrite(cp);
+#endif
 
-        template <typename... Args>
-        LogFormatter(Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, false, nullptr) { storeArguments(std::forward<Args>(args)...); }
+        }
 
         template <typename... Args>
         LogFormatter(const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, false, &loc) { storeArguments(std::forward<Args>(args)...); }
@@ -1030,6 +1080,11 @@ namespace CompileTime
         const uint32 readPos = Log::logBuffer.fetchReadPos();
         Log::LogItem item;
         if (!Log::logBuffer.loadType(item)) return false;
+#ifdef StoreLogSizeType
+        StoreLogSizeType blank;
+        if (!Log::logBuffer.loadType(blank)) return false;
+#endif
+
         // Check if we need to format file and line and mask first
         std::uintptr_t filePtr = 0;
         std::size_t line = 0;
@@ -1065,7 +1120,7 @@ namespace CompileTime
 }
 
 // We are using a syntactic sugar macro here to make the code more usual for any user
-#define log(fmt, ...)               CompileTime::LogFormatter<CompileTime::str{fmt}>{__VA_ARGS__}
+#define log(fmt, ...)               CompileTime::LogFormatter<CompileTime::str{fmt}>{Log::LogMask::Default, __VA_ARGS__}
 #define logf(fmt, ...)              CompileTime::LogFormatter<CompileTime::str{fmt}>{CompileTime::sourceloc::current(), __VA_ARGS__}
 #define logfl(fmt, ...)             CompileTime::LogFormatter<CompileTime::str{fmt}>{true, CompileTime::sourceloc::current(), __VA_ARGS__}
 #define logm(mask, fmt, ...)        CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, __VA_ARGS__}

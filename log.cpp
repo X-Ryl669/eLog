@@ -113,6 +113,7 @@ namespace Log
 namespace CompileTime
 {
 #if DeleteOldLogsWhenFull == 1
+  #ifndef StoreLogSizeType
     static bool extractFirstLog(const Log::LogItem & item)
     {
         std::uintptr_t ptr = 0; std::size_t siz = 0; uint32 msk = 0;
@@ -138,14 +139,14 @@ namespace CompileTime
 
             std::size_t _size = 0;
             uint32 rSave = 0;
+            Specifier finalSpec = simplify(specifierType(stype.specifier));
             if (sized)
             {   // Extract the argument for the size
                 rSave = Log::logBuffer.fetchReadPos();
-                if (!Log::logBuffer.load(_size)) return false;
+                if (finalSpec != Specifier::String && !Log::logBuffer.load(_size)) return false;
             }
             std::size_t * size = sized ? &_size : nullptr;
 
-            Specifier finalSpec = simplify(specifierType(stype.specifier));
             switch (finalSpec)
             {
             case Specifier::Double:
@@ -185,8 +186,10 @@ namespace CompileTime
             } break;
             case Specifier::String:
             {
-                if (!sized && !Log::logBuffer.load(_size)) return false;
-                if (!Log::logBuffer.consume(_size)) return false;
+                //if (!sized && !Log::logBuffer.load(_size)) return false;
+                std::size_t len = 0;
+                if (!Log::logBuffer.loadString(nullptr, len)) return false;
+                if (!Log::logBuffer.consume(len)) return false;
             } break;
             case Specifier::Char:
             {
@@ -203,12 +206,17 @@ namespace CompileTime
         // Finally append what remains here
         return true;
     }
-
+  #endif
     bool extractFirstLog()
     {
         const uint32 r = Log::logBuffer.fetchReadPos();
         Log::LogItem item;
         if (!Log::logBuffer.loadType(item)) return false;
+#ifdef StoreLogSizeType
+        StoreLogSizeType size;
+        if (!Log::logBuffer.loadType(size)) return false;
+        return Log::logBuffer.consume(size); // Already consumed the size value above, that's not included in the computation
+#else
         // Check if we need to format file and line and mask first
         if (!extractFirstLog(item))
         {
@@ -216,6 +224,7 @@ namespace CompileTime
             return false;
         }
         return true;
+#endif
     }
 #endif
 
@@ -243,14 +252,14 @@ namespace CompileTime
 
             std::size_t _size = 0;
             uint32 rSave = 0;
+            Specifier finalSpec = simplify(specifierType(stype.specifier));
             if (sized)
             {   // Extract the argument for the size
                 rSave = Log::logBuffer.fetchReadPos();
-                if (!Log::logBuffer.load(_size)) return false;
+                if (finalSpec != Specifier::String && !Log::logBuffer.load(_size)) return false;
             }
             std::size_t * size = sized ? &_size : nullptr;
 
-            Specifier finalSpec = simplify(specifierType(stype.specifier));
             switch (finalSpec)
             {
             case Specifier::Double:
@@ -290,13 +299,11 @@ namespace CompileTime
             } break;
             case Specifier::String:
             {
-                char * string = {}; std::size_t len = _size;
-
-                if (!sized) { if (!Log::logBuffer.loadString(nullptr, len)) return false; }
-                else Log::logBuffer.rollback(rSave); // We've already read the length, so roll back up
-                string = new char[len+1]; string[len] = 0;
+                char * string = {}; std::size_t len = 0;
+                if (!Log::logBuffer.loadString(nullptr, len)) return false;
+                string = new char[len];
                 if (!Log::logBuffer.loadString(string, len)) { delete[] string; return false; }
-                if (sized) s.appendV(specifierString, size, string); else s.appendV(specifierString, string);
+                if (sized) s.appendV(specifierString, len - 1, string); else s.appendV(specifierString, string);
                 delete[] string;
             } break;
             case Specifier::Char:

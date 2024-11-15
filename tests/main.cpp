@@ -1,6 +1,6 @@
 #include <cstdio>
 
-#define DeleteOldLogsWhenFull 0
+#define DeleteOldLogsWhenFull 1
 #include "log.hpp"
 
 namespace Log { void errorStoringArgumentsFor(const char* format) { printf("ERROR: %s\n", format); }}
@@ -48,10 +48,6 @@ int main()
     printf("Arguments: %u\n", CompileTime::countArguments(test));
 
     uint32 storedLogSize = Log::logBuffer.getSize();
-#if DeleteOldLogsWhenFull == 1
-    CompileTime::extractFirstLog();
-    CompileTime::extractFirstLog();
-#endif
 
     printf("Log buffer contains %u bytes:\n", Log::logBuffer.getSize());
     for (auto i = 0; i < Log::logBuffer.getSize(); i++)
@@ -62,6 +58,25 @@ int main()
     printf("\n");
 
     uint32 combinedSize = 0;
+    while (CompileTime::dumpLog([&combinedSize](const char * str, uint32 mask) { combinedSize += strlen(str)+1; printf("%s\n", str); })) {}
+
+    printf("Log compression size: %u/%u = %.2f%%\n", storedLogSize, combinedSize, (float)storedLogSize * 100 / combinedSize);
+
+
+    // Test wrapping up the circular buffer now
+    uint32 iter = 0;
+    while (Log::logBuffer.fetchWritePos() >= Log::logBuffer.fetchReadPos())
+    {
+        log("Sample log for iteration %u", iter++);
+    }
+
+
+#if DeleteOldLogsWhenFull == 1
+ //   CompileTime::extractFirstLog();
+#endif
+
+    combinedSize = 0;
+    storedLogSize = Log::logBuffer.getSize();
     while (CompileTime::dumpLog([&combinedSize](const char * str, uint32 mask) { combinedSize += strlen(str)+1; printf("%s\n", str); })) {}
 
     printf("Log compression size: %u/%u = %.2f%%\n", storedLogSize, combinedSize, (float)storedLogSize * 100 / combinedSize);

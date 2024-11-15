@@ -107,7 +107,7 @@ int dumpLogsOnUART()
     while(CompileTime::dumpLog(
             [](const char * str, uint32 mask)
             {
-                printf("[%u] %s\n", str, mask);
+                printf("[%u] %s\n", mask, str);
                 // You can also return void if you don't care about keeping
                 // the logs on error
             })
@@ -127,13 +127,13 @@ With the magic of C++, you can now have this:
 ```cpp
 int main(...)
 {
-    logf("We know that the area of a circle of radius %gmm2 is %gmm since %.*s", 3, 3.1415 * 3 * 3, "Pythagorus");
+    logf("We know that the area of a circle of radius %gmm is %gmm2 since %.*s", 3, 3.1415 * 3 * 3, "Pythagorus");
 }
 
 $ make
 In file included from main.cpp:4:
-../include/log.hpp: In instantiation of 'void CompileTime::LogFormatter<string>::storeArguments(Args&& ...) [with Args = {int, double, const char*}; auto string = CompileTime::str<69>{"We know that the area of a circle of radius %gmm2 is %gmm since %.*s"}]':
-../include/log.hpp:954:147:   required from 'CompileTime::LogFormatter<string>::LogFormatter(const CompileTime::sourceloc&, Args ...) [with Args = {int, double, const char*}; auto string = CompileTime::str<69>{"We know that the area of a circle of radius %gmm2 is %gmm since %.*s"}; CompileTime::sourceloc = std::source_location]'
+../include/log.hpp: In instantiation of 'void CompileTime::LogFormatter<string>::storeArguments(Args&& ...) [with Args = {int, double, const char*}; auto string = CompileTime::str<69>{"We know that the area of a circle of radius %gmm is %gmm2 since %.*s"}]':
+../include/log.hpp:954:147:   required from 'CompileTime::LogFormatter<string>::LogFormatter(const CompileTime::sourceloc&, Args ...) [with Args = {int, double, const char*}; auto string = CompileTime::str<69>{"We know that the area of a circle of radius %gmm is %gmm2 since %.*s"}; CompileTime::sourceloc = std::source_location]'
   954 |         LogFormatter(const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, false, &loc) { storeArguments(std::forward<Args>(args)...); }
       |                                                                                                                                     ~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 main.cpp:70:5:   required from here
@@ -156,7 +156,7 @@ The error message from the compiler give the reason why it failed, the number of
 This library depends on few configurable variable. Those are:
 
 ### RingBuffer size
-This is the size, in bytes, of the circular buffer for storing log items. Usually, 512 bytes is enough to store ~2000 lines of logs, which might be more than enough for your application. It must be a power of 2 (since the ring buffer use `& (size-1)` operation as a modulo to avoid a division)
+This is the size, in bytes, of the circular buffer for storing log items. Usually, 512 bytes is enough to store the last ~100 lines of logs on a 32 bits system, which might be more than enough for your application. It must be a power of 2 (since the ring buffer use `& (size-1)` operation as a modulo to avoid a division)
 ```cpp
 #define LogRingBufferSize 512
 ```
@@ -167,10 +167,25 @@ By default, when the ring buffer is full, the oldest log items are *deleted* (co
 
 However, this implies some code to parse the log's format, in order to extract the arguments that were saved in the buffer. If you are really constrainted by the library binary's size in flash, you might want to disable this feature and simply let the system fails to store new logs when it's full.
 
-NOTE: If you consume the logs with `dumpLog`, the old logs are *deleted*, so if you application has a way to dump its log periodically, this might be enough.
+**NOTE**: If you consume the logs with `dumpLog`, the old logs are *deleted*, so if you application has a way to dump its log periodically, this might be enough.
 
 ```cpp
 #define DeleteOldLogsWhenFull 1
+```
+
+### Log storage strategy
+
+By default, the log header doesn't contain the stored size for the log and its arguments. This saves memory in the ring buffer, but when deleting logs, it means parsing the log format line to skip the arguments to find the next log position (so it has a cost in binary code size).
+
+If defined to a unsigned type, it will store the size for the log and its arguments after the header allowing to skip the format line parsing (binary code saving) at the cost of the given type storage in memory.
+
+Default to undefined
+
+**NOTE**: If the log's parameters are larger than what can be stored in this type, this will
+      likely trigger the failure reporting feature (see below). In that case, the matching log will not be stored in the buffer. Typically, a uint8 will allow to store up to 256 bytes of parameters (the log format string isn't counted in this storage). A uint16 allows up to 65536 bytes, althrough it doesn't make real sense since that would mean a very huge parameter list.
+
+```cpp
+#define StoreLogSizeType           uint8
 ```
 
 ### Failure reporting mode
@@ -186,3 +201,5 @@ namespace Log {
     }
 }
 ```
+
+
