@@ -1148,9 +1148,9 @@ namespace CompileTime
 }
 
 // We are using a syntactic sugar macro here to make the code more usual for any user
-#define log(fmt, ...)               CompileTime::LogFormatter<CompileTime::str{fmt}>{Log::LogMask::Default, __VA_ARGS__}
-#define logf(fmt, ...)              CompileTime::LogFormatter<CompileTime::str{fmt}>{CompileTime::sourceloc::current(), __VA_ARGS__}
-#define logfl(fmt, ...)             CompileTime::LogFormatter<CompileTime::str{fmt}>{true, CompileTime::sourceloc::current(), __VA_ARGS__}
-#define logm(mask, fmt, ...)        CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, __VA_ARGS__}
-#define logflm(mask, fmt, ...)      CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, true, CompileTime::sourceloc::current(), __VA_ARGS__}
+#define elog(fmt, ...)               CompileTime::LogFormatter<CompileTime::str{fmt}>{Log::LogMask::Default, __VA_ARGS__}
+#define elogf(fmt, ...)              CompileTime::LogFormatter<CompileTime::str{fmt}>{CompileTime::sourceloc::current(), __VA_ARGS__}
+#define elogfl(fmt, ...)             CompileTime::LogFormatter<CompileTime::str{fmt}>{true, CompileTime::sourceloc::current(), __VA_ARGS__}
+#define elogm(mask, fmt, ...)        CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, __VA_ARGS__}
+#define elogflm(mask, fmt, ...)      CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, true, CompileTime::sourceloc::current(), __VA_ARGS__}
 
