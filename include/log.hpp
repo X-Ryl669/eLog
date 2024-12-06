@@ -56,6 +56,11 @@ typedef std::uint16_t   uint16;
     #endif
 #endif
 
+#if defined(ESP_PLATFORM)
+    #define BackupMemory RTC_NOINIT_ATTR
+#else
+    #define BackupMemory
+#endif
 
 #if DeleteOldLogsWhenFull == 1
 namespace CompileTime { bool extractFirstLog(); }
@@ -380,7 +385,7 @@ namespace Log
     };
 
     /** The main log buffer that'll store all the log items */
-    inline RingBuffer<LogRingBufferSize> logBuffer;
+    inline BackupMemory RingBuffer<LogRingBufferSize> logBuffer;
 
     /** Bitfield of possible mask type, don't change the first 3 items */
     enum LogMask
