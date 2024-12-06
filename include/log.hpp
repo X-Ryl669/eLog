@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdarg>
 
+#include "eLogConfig.hpp"
 
 typedef std::uint32_t   uint32;
 typedef std::uint64_t   uint64;
@@ -56,9 +57,7 @@ typedef std::uint16_t   uint16;
     #endif
 #endif
 
-#if defined(ESP_PLATFORM)
-    #define BackupMemory RTC_NOINIT_ATTR
-#else
+#ifndef BackupMemory
     #define BackupMemory
 #endif
 
