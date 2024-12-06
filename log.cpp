@@ -138,11 +138,9 @@ namespace CompileTime
             if (stype.second != SubType::None) type = (stype.first == SubType::Short) ? (char)stype.second  - 32 : (stype.first == SubType::Long) ? (char)stype.second - 32 : (char)stype.second;
 
             std::size_t _size = 0;
-            uint32 rSave = 0;
             Specifier finalSpec = simplify(specifierType(stype.specifier));
             if (sized)
             {   // Extract the argument for the size
-                rSave = Log::logBuffer.fetchReadPos();
                 if (finalSpec != Specifier::String && !Log::logBuffer.load(_size)) return false;
             }
             std::size_t * size = sized ? &_size : nullptr;
@@ -209,7 +207,9 @@ namespace CompileTime
   #endif
     bool extractFirstLog()
     {
+#ifndef StoreLogSizeType
         const uint32 r = Log::logBuffer.fetchReadPos();
+#endif
         Log::LogItem item;
         if (!Log::logBuffer.loadType(item)) return false;
 #ifdef StoreLogSizeType
@@ -251,11 +251,9 @@ namespace CompileTime
             if (stype.second != SubType::None) type = (stype.first == SubType::Short) ? (char)stype.second  - 32 : (stype.first == SubType::Long) ? (char)stype.second - 32 : (char)stype.second;
 
             std::size_t _size = 0;
-            uint32 rSave = 0;
             Specifier finalSpec = simplify(specifierType(stype.specifier));
             if (sized)
             {   // Extract the argument for the size
-                rSave = Log::logBuffer.fetchReadPos();
                 if (finalSpec != Specifier::String && !Log::logBuffer.load(_size)) return false;
             }
             std::size_t * size = sized ? &_size : nullptr;
@@ -317,7 +315,7 @@ namespace CompileTime
                 if (!Log::logBuffer.load(ptr)) return false;
                 if (sized) s.appendV(specifierString, size, ptr); else s.appendV(specifierString, ptr);
             }
-            case Specifier::Unknown: break; // Invalid specifier is ignored and output as is
+            case Specifier::Unknown: default: break; // Invalid specifier is ignored and output as is
             }
             str = spec+1;
         }

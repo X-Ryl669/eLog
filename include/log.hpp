@@ -30,7 +30,9 @@ typedef std::uint16_t   uint16;
     deleting logs, it means parsing the log format line to skip the arguments to find the next log position (so it has a cost in binary code size).
     If defined to a unsigned type, it will store the size for the log and its arguments after the header allowing to skip the format line parsing (binary code saving)
     at the cost of the given type storage in memory. */
-#define StoreLogSizeType           uint8
+#ifndef StoreLogSizeType
+    #define StoreLogSizeType           uint8
+#endif
 /** Define the error strategy when a log can't be saved in the log buffer.
     By default, it calls a function in Log namespace with signature "void errorStoringArgumentsFor(const char* format)" is called
     If set to 1, an exception Log::Exception(const char* format) is thrown instead */
@@ -324,7 +326,6 @@ namespace Log
             @param len  On output, will be filled with the number of bytes required to load this string, including the terminating NUL byte */
         bool loadString(char * str, std::size_t & len)
         {
-            uint32 rp = r;
             // Find length first
             for (len = 0; ((r + len) & sm1) != w; len++)
                 if (buffer[(r+len) & sm1] == 0) break;
@@ -772,7 +773,7 @@ namespace CompileTime
         This takes care of %*d and %.*s dual specifiers */
     constexpr std::size_t countSpecifiers(const char * str) {
         std::size_t count = 0;
-        while (str = nextIthSpecifier(0, str))
+        while ((str = nextIthSpecifier(0, str)))
             count++;
         return count;
     }
