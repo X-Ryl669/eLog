@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdarg>
 
+#include "eLogConfig.hpp"
 
 typedef std::uint32_t   uint32;
 typedef std::uint64_t   uint64;
@@ -61,9 +62,7 @@ namespace Log { extern void (*LogCallback)(const char * file, const int line, co
     #endif
 #endif
 
-#if defined(ESP_PLATFORM)
-    #define BackupMemory RTC_NOINIT_ATTR
-#else
+#ifndef BackupMemory
     #define BackupMemory
 #endif
 
