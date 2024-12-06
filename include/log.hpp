@@ -30,8 +30,8 @@ typedef std::uint16_t   uint16;
     deleting logs, it means parsing the log format line to skip the arguments to find the next log position (so it has a cost in binary code size).
     If defined to a unsigned type, it will store the size for the log and its arguments after the header allowing to skip the format line parsing (binary code saving)
     at the cost of the given type storage in memory. */
-#ifndef StoreLogSizeType
-    #define StoreLogSizeType           uint8
+#ifdef DefineStoreLogSizeType
+    #define StoreLogSizeType        uint8
 #endif
 /** Define the error strategy when a log can't be saved in the log buffer.
     By default, it calls a function in Log namespace with signature "void errorStoringArgumentsFor(const char* format)" is called
