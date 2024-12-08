@@ -1,5 +1,5 @@
 // We need our declarations
-#include "log.hpp"
+#include "elog.hpp"
 
 namespace Log
 {
