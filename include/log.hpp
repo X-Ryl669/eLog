@@ -940,7 +940,7 @@ namespace CompileTime
 #endif
             Log::logBuffer.saveType(*(const Log::LogItem *)this); // Save the log item first
 #ifdef StoreLogSizeType
-            StoreLogSizeType blank;
+            StoreLogSizeType blank {};
             Log::logBuffer.saveType(blank); // This reserves the space for the storing the number of bytes used for this item in the buffer
 #endif
             if (loc) Log::logBuffer.save(Log::LogItem::computeAddress(loc->file_name())); // Don't save the string here since it should be in the binary, so only store its pointer
