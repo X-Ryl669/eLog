@@ -1,3 +1,4 @@
+#pragma once 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -1152,4 +1153,4 @@ namespace CompileTime
 #define elogfl(fmt, ...)             CompileTime::LogFormatter<CompileTime::str{fmt}>{true, CompileTime::sourceloc::current(), __VA_ARGS__}
 #define elogm(mask, fmt, ...)        CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, __VA_ARGS__}
 #define elogflm(mask, fmt, ...)      CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, true, CompileTime::sourceloc::current(), __VA_ARGS__}
-
+#define elogt(mask, fmt, loc, ...)   CompileTime::LogFormatter<CompileTime::str{fmt}>{true, loc, __VA_ARGS__}
