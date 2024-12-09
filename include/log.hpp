@@ -40,6 +40,11 @@ typedef std::uint16_t   uint16;
     #define ThrowOnError            0
 #endif
 
+/** The callback function to use when logging for immediate output of the log, using vnprintf wrapper */
+#ifdef UseLogCallback
+namespace Log { extern void (*LogCallback)(const char * file, const int line, const uint32 mask, const char * format, va_list args); }
+#endif
+
 #if INTPTR_MAX == INT32_MAX
     // On 32 bit system, we want to save a word while storing data into the log item. So we reuse some bits from the const char * pointer for storage
     // In order to do so, we have to subtract any static offset from the pointer so that high order bits are available for storage
@@ -931,6 +936,7 @@ namespace CompileTime
         LogItemSaver(const char * str, const uint32 mask, const bool saveLine, const sourceloc * loc)
         {
             if ((mask & 3) == 3 && (mask & Log::logMask) == 0) return;
+            kept = true;
             FileDump = loc ? 1 : 0;
             LineDump = saveLine ? 1 : 0;
             MaskType = mask < 4 ? mask : 3;
@@ -950,6 +956,7 @@ namespace CompileTime
 #ifdef StoreLogSizeType
         uint32 wp;
 #endif
+        bool kept = false;
     };
     template <const auto string>
     struct LogFormatter : public LogItemSaver
@@ -967,6 +974,7 @@ namespace CompileTime
             constexpr std::size_t expArgCount = countArguments(string);
             static_assert(expArgCount == sizeof...(Args), "The number of arguments in the format specifier doesn't match the number of arguments passed in");
             static_assert(std::is_same_v<std::decay_t<decltype(argList)>, decltype(SpecifiersTable<N>::getLooselyTypedArguments(impl_string, std::make_index_sequence<N>{}))>, "The expected arguments doesn't match those in the format specifier");
+            if (!kept) return; // Log isn't saved, skip this
             // Here we've a problem. The given argument list promotion is different depending on the specifier.
             // Typically, if given a %p, we store a pointer (and we don't care if the pointed object still exist when the log will be dumped later on), so any pointer should be converted to void*.
             // But if given a %s, we have to store a string (don't convert to void*), since the pointed string might not exists anymore once we'll dump the log.
@@ -998,20 +1006,34 @@ namespace CompileTime
             Log::logBuffer.saveType((StoreLogSizeType)s);
             Log::logBuffer.rollbackWrite(cp);
 #endif
-
         }
 
+#ifdef UseLogCallback
+        void invokeCallback(const sourceloc * loc, const uint32 mask, ...)
+        {
+            if (kept && Log::LogCallback)
+            {
+                va_list vaargs;
+                va_start(vaargs, mask);
+                Log::LogCallback(loc ? loc->file_name() : "", loc ? loc->line() : 0, mask, string, vaargs);
+                va_end(vaargs);
+            }
+        }
+#else
         template <typename... Args>
-        LogFormatter(const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, false, &loc) { storeArguments(std::forward<Args>(args)...); }
+        void invokeCallback(const sourceloc * loc, const uint32 mask, const Args & ... args) {}
+#endif
+        template <typename... Args>
+        LogFormatter(const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, false, &loc) { invokeCallback(&loc, Log::LogMask::Default, args...); storeArguments(std::forward<Args>(args)...); }
 
         template <typename... Args>
-        LogFormatter(const bool, const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, true, &loc) { storeArguments(std::forward<Args>(args)...); }
+        LogFormatter(const bool, const sourceloc & loc, Args... args) : LogItemSaver((const char*)string, Log::LogMask::Default, true, &loc) { invokeCallback(&loc, Log::LogMask::Default, args...); storeArguments(std::forward<Args>(args)...); }
 
         template <typename... Args>
-        LogFormatter(const uint32 mask, const bool, const sourceloc & loc,  Args... args) : LogItemSaver((const char*)string, mask, true, &loc) { storeArguments(std::forward<Args>(args)...); }
+        LogFormatter(const uint32 mask, const bool, const sourceloc & loc,  Args... args) : LogItemSaver((const char*)string, mask, true, &loc) { invokeCallback(&loc, mask, args...); storeArguments(std::forward<Args>(args)...); }
 
         template <typename... Args>
-        LogFormatter(const uint32 mask, Args... args) : LogItemSaver((const char*)string, mask, false, nullptr) { storeArguments(std::forward<Args>(args)...); }
+        LogFormatter(const uint32 mask, Args... args) : LogItemSaver((const char*)string, mask, false, nullptr) { invokeCallback(nullptr, mask, args...); storeArguments(std::forward<Args>(args)...); }
 
         template <typename... Args>
         static constexpr auto getActualTypeList(Args... args)

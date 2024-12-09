@@ -3,6 +3,10 @@
 
 namespace Log
 {
+#ifdef UseLogCallback
+    void (*LogCallback)(const char * file, const int line, const uint32 mask, const char * format, va_list args) = nullptr;
+#endif
+
     uint8 encodedLen(uint8 b)
     {
         if (b < 0b10000000) return 1;

@@ -1,9 +1,20 @@
 #include <cstdio>
 
 #define DeleteOldLogsWhenFull 1
+#define UseLogCallback
 #include "log.hpp"
 
-namespace Log { void errorStoringArgumentsFor(const char* format) { printf("ERROR: %s\n", format); }}
+namespace Log
+{
+    void errorStoringArgumentsFor(const char* format) { printf("ERROR: %s\n", format); }
+    void LogCallbackImpl(const char * file, const int line, const uint32 mask, const char * format, va_list args)
+    {
+        printf("%s(%d)[%u]:", file, line, mask);
+        vprintf(format, args);
+        printf("\n");
+    }
+
+}
 
 template<typename T>
 void dumpType()
@@ -13,6 +24,7 @@ void dumpType()
 
 int main()
 {
+//    Log::LogCallback = Log::LogCallbackImpl;
     /*
     constexpr auto s = str{"something %d%% %.*s %.Lf"};
     constexpr std::size_t c = countArguments(s);

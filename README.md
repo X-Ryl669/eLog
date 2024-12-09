@@ -202,4 +202,18 @@ namespace Log {
 }
 ```
 
+### Using log callback function
+If you need to capture the logs at the time they are called, before they are saved in the buffer, for example for outputing them on a serial link, you can define the `UseLogCallback` macro.
 
+You will need to provide a `LogCallback` compatible function that will be called for each log passing the mask. This adds 1.1kB of binary size on the test program.
+
+Default to undefined
+
+```cpp
+#define UseLogCallback
+
+void LogCallbackImpl(const char * file, const int line, const uint32 mask, const char * format, va_list args) { ... }
+
+// Start of your main:
+Log::LogCallback = LogCallbackImpl;
+```
