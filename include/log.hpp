@@ -1,11 +1,9 @@
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cwctype>
 #include <functional>
 #include <type_traits>
-#include <source_location>
 #include <cstring>
 #include <cstdarg>
 
@@ -425,12 +423,30 @@ namespace CompileTime
                 data[i] = s[i];
             }
         }
-
+        template <std::size_t M> constexpr str(const char (&s)[M], std::size_t offset) {
+            for(std::size_t i = 0; i < N; i++)
+            {
+                if (!s[i+offset]) break;
+                data[i] = s[i + offset];
+            }
+        }
         constexpr operator const char*() const { return data; }
     };
 
     /** Help the compiler deduce the type (with the number of bytes) from the given static array */
     template <std::size_t N> str(const char (&s)[N]) -> str<N>;
+
+    /** Find the last slash in the file path to only extract the filename */
+    constexpr std::size_t rfind(const char * data, const std::size_t N, const char c) {
+        for (std::size_t i = N-1;; i--) if (data[i] == c) return i+1;
+        return 0;
+    }
+    template <auto s, char c = '/'> constexpr auto basename()
+    {
+        constexpr std::size_t pos = rfind(s, s.size, c);
+        return str<s.size - pos+1>{s.data, pos};
+    }
+
 
     // This is to link a template constexpr to a char array reference that's usable in parsing context
     // This is equivalent to template <typename Type, Type S> to be used as template <typename str<N>, str<N> value>
@@ -826,8 +842,17 @@ namespace CompileTime
 
     };
 
-    /** Because I'm lazy to type all of those */
-    using sourceloc = std::source_location;
+    /** Make sure only the file name is saved and not the whole file path */
+    struct sourceloc
+    {
+        constexpr sourceloc(const char * filename, const int line) : _filename(filename), _line(line){}
+        const char * _filename;
+        const int _line;
+        inline const char * file_name() const { return _filename; }
+        inline int line() const { return _line; }
+    };
+    #define SourceLoc CompileTime::sourceloc{CompileTime::basename<CompileTime::str{__FILE__}>(), __LINE__}
+//    using sourceloc = std::source_location;
 
     /** Storing arguments to the log buffer is a bit more complex because the expanded argument array can't be iterated
         with the parsed (specifier) type list, they don't have the same size. A specifier "%.*s" maps to a TypeList<int, char*>
@@ -1144,8 +1169,8 @@ namespace CompileTime
 
 // We are using a syntactic sugar macro here to make the code more usual for any user
 #define log(fmt, ...)               CompileTime::LogFormatter<CompileTime::str{fmt}>{Log::LogMask::Default, __VA_ARGS__}
-#define logf(fmt, ...)              CompileTime::LogFormatter<CompileTime::str{fmt}>{CompileTime::sourceloc::current(), __VA_ARGS__}
-#define logfl(fmt, ...)             CompileTime::LogFormatter<CompileTime::str{fmt}>{true, CompileTime::sourceloc::current(), __VA_ARGS__}
+#define logf(fmt, ...)              CompileTime::LogFormatter<CompileTime::str{fmt}>{SourceLoc, __VA_ARGS__}
+#define logfl(fmt, ...)             CompileTime::LogFormatter<CompileTime::str{fmt}>{true, SourceLoc, __VA_ARGS__}
 #define logm(mask, fmt, ...)        CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, __VA_ARGS__}
-#define logflm(mask, fmt, ...)      CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, true, CompileTime::sourceloc::current(), __VA_ARGS__}
-
+#define logflm(mask, fmt, ...)      CompileTime::LogFormatter<CompileTime::str{fmt}>{mask, true, SourceLoc, __VA_ARGS__}
+#define logt(mask, fmt, loc, ...)   CompileTime::LogFormatter<CompileTime::str{fmt}>{true, loc, __VA_ARGS__}
