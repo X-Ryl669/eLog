@@ -398,6 +398,10 @@ namespace Log
     /** The current log mask */
     inline uint32 logMask = 0xFFFFFFFF;
 
+    /** Make sure we can OR with custom enum flags too */
+    template <typename T> requires std::is_enum_v<T>
+    constexpr inline LogMask operator | (LogMask l, T e) { return (LogMask)((uint32)l | (uint32)e); } 
+  
 
 #if ThrowOnError == 1
     struct Exception { const char * format; Exception(const char* format): format(format) {}};
@@ -976,7 +980,7 @@ namespace CompileTime
 #endif
             if (loc) Log::logBuffer.save(Log::LogItem::computeAddress(loc->file_name())); // Don't save the string here since it should be in the binary, so only store its pointer
             if (loc && saveLine) Log::logBuffer.save(loc->line());
-            if ((mask & 3) == 3) Log::logBuffer.save(mask);
+            if (mask > 3) Log::logBuffer.save(mask);
         }
 #ifdef StoreLogSizeType
         uint32 wp;
