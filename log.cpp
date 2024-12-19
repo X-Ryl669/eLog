@@ -243,7 +243,8 @@ namespace CompileTime
         char specifierString[sizeof("%0.18446744073709551615lls")] = {'%'}; // That's the maximum size the specifier can use in printf (but that would be very crazy to do so)
         for (auto i = 0; i < argCount; i++)
         {
-            const char * spec = nextSpecifier(str);
+            const char * spec = nextSpecifier(str, true);
+            if (*spec == '%') { s.append(str, spec - str); str = spec + 1; i--; continue; } // Escaped character is simply copied over
             // Store the textual size
             s.append(str, spec - str - 1);
 
@@ -324,7 +325,12 @@ namespace CompileTime
             str = spec+1;
         }
         // Finally append what remains here
-        s.append(str);
+        while (true) {
+            const char * spec = nextSpecifier(str, true);
+            if (spec) s.append(str, spec - str);
+            else { s.append(str); break; }
+            str = spec+1;
+        }
         return true;
     }
 }

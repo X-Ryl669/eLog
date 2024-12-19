@@ -1,8 +1,11 @@
 #include <cstdio>
+#include <source_location>
+#include <alloca.h>
 
 #define DeleteOldLogsWhenFull 1
 #define UseLogCallback
 #include "log.hpp"
+#include "../log.cpp"
 
 namespace Log
 {
@@ -24,7 +27,7 @@ void dumpType()
 
 int main()
 {
-//    Log::LogCallback = Log::LogCallbackImpl;
+    Log::LogCallback = Log::LogCallbackImpl;
     /*
     constexpr auto s = str{"something %d%% %.*s %.Lf"};
     constexpr std::size_t c = countArguments(s);
@@ -43,9 +46,17 @@ int main()
      auto u = LogFormatter<str{"something very dumb %d"}>{i};
      */
 
+    log("This is a sample %.3fV and %.2f%%", 3.23, 66.214);
+    log("This %% is %.3f %% abc", 1.0);
+    log("This %%");
+    log("This %%%%");
+
+
     log("This is a sample log");
     logf("This is another log with %d arguments", 2);
     logfl("Test: %c-%p-%08X something %.*s for %g", '-', "something", 0xDEADBEEF, 7, "strangely", 3.1415926535f);
+
+
 
     constexpr const char test[] = "Test: %c-%p-%08X something %.*s for %g";
     const char * testrt = "Test: %c-%p-%08X something %.*s for %g";

@@ -1,3 +1,4 @@
+#pragma once
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -400,8 +401,8 @@ namespace Log
 
     /** Make sure we can OR with custom enum flags too */
     template <typename T> requires std::is_enum_v<T>
-    constexpr inline LogMask operator | (LogMask l, T e) { return (LogMask)((uint32)l | (uint32)e); } 
-  
+    constexpr inline LogMask operator | (LogMask l, T e) { return (LogMask)((uint32)l | (uint32)e); }
+
 
 #if ThrowOnError == 1
     struct Exception { const char * format; Exception(const char* format): format(format) {}};
@@ -440,18 +441,6 @@ namespace CompileTime
     /** Help the compiler deduce the type (with the number of bytes) from the given static array */
     template <std::size_t N> str(const char (&s)[N]) -> str<N>;
 
-    /** Find the last slash in the file path to only extract the filename */
-    constexpr std::size_t rfind(const char * data, const std::size_t N, const char c) {
-        for (std::size_t i = N-1;; i--) if (data[i] == c) return i+1;
-        return 0;
-    }
-    template <auto s, char c = '/'> constexpr auto basename()
-    {
-        constexpr std::size_t pos = rfind(s, s.size, c);
-        return str<s.size - pos+1>{s.data, pos};
-    }
-
-
     // This is to link a template constexpr to a char array reference that's usable in parsing context
     // This is equivalent to template <typename Type, Type S> to be used as template <typename str<N>, str<N> value>
     template <const auto S>
@@ -459,6 +448,19 @@ namespace CompileTime
         constexpr static auto & instance = S;
         constexpr static auto & data = S.data;
     };
+
+    /** Find the last slash in the file path to only extract the filename */
+    template <std::size_t N>
+    constexpr std::size_t rfind(const char (&data)[N], const char c) {
+        for (std::size_t i = N-1;i; i--) if (data[i] == c) return i+1;
+        return 0;
+    }
+    template <auto s, char c = '/'> constexpr auto basename()
+    {
+        constexpr std::size_t pos = rfind(s.data, c);
+        return str<s.size - pos+1>{s.data, pos};
+    }
+
 
     /** We only care for the expected parameter type (and automatic conversion) here, not the specific formatting rule
         (like uppercase), so all formatting char are compared lowercase.
@@ -698,11 +700,11 @@ namespace CompileTime
 
     /** Get a pointer to the next specifier.
         This doesn't care for %*d or %.*s like specifier that are viewed as a single specifier */
-    constexpr const char * nextSpecifier(const char * str) {
+    constexpr const char * nextSpecifier(const char * str, bool allowEscape = false) {
         for (std::size_t i = 0; str[i]; i++) {
             if (str[i] == '%') {
                 if (!str[i+1]) return nullptr;
-                if (str[i+1] == '%') i++; // Ignore %% in the format string here
+                if (!allowEscape && str[i+1] == '%') i++; // Ignore %% in the format string here
                 else return &str[i+1];
             }
         }
