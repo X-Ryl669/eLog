@@ -69,6 +69,34 @@ namespace Log { extern void (*LogCallback)(const char * file, const int line, co
 namespace CompileTime { bool extractFirstLog(); }
 #endif
 
+#if WithoutThreads == 1
+namespace Log { struct Mutex {}; struct ScopedLock { ScopedLock(const Mutex &); }; }
+#else
+namespace Log
+{
+#if defined(xSemaphoreTake) // FreeRTOS
+    struct Mutex {
+        void acquire() { xSemaphoreTake(h, portMAX_DELAY); }
+        void release() { xSemaphoreGive(h); }
+        Mutex() : h(xSemaphoreCreateMutexStatic(&buffer)) {}
+        StaticSemaphore_t buffer = {};
+        SemaphoreHandle_t h;
+    };
+#elif defined(__STDCPP_THREADS__) && !defined(HasMutex)   // Anything C++17 or more
+    struct Mutex {
+        void acquire() { m.lock(); }
+        void release() { m.unlock(); }
+        std::mutex m;
+    };
+#endif
+    struct ScopedLock {
+        ScopedLock(Mutex & m) : m(m) { m.acquire(); }
+        ~ScopedLock() { m.release(); }
+        Mutex & m;
+    };
+}
+#endif
+
 namespace Log
 {
     #pragma pack(push, 1)
@@ -163,6 +191,8 @@ namespace Log
     template <std::size_t sizePowerOf2>
     struct RingBuffer
     {
+        /** The mutex used to protect this structure, manipulated from outside */
+        Mutex                           mutex;
         /** Read and write pointer in the ring buffer */
         uint32                          r, w;
         /** Buffer size minus 1 in bytes */
@@ -968,7 +998,7 @@ namespace CompileTime
 
     struct LogItemSaver : public Log::LogItem
     {
-        LogItemSaver(const char * str, const uint32 mask, const bool saveLine, const sourceloc * loc)
+        LogItemSaver(const char * str, const uint32 mask, const bool saveLine, const sourceloc * loc) : lock(Log::logBuffer.mutex)
         {
             if ((mask & 3) == 3 && (mask & Log::logMask) == 0) return;
             kept = true;
@@ -991,6 +1021,7 @@ namespace CompileTime
 #ifdef StoreLogSizeType
         uint32 wp;
 #endif
+        Log::ScopedLock lock;
         bool kept = false;
     };
     template <const auto string>
