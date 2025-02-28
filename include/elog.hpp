@@ -16,6 +16,8 @@ typedef std::int64_t    int64;
 typedef std::uint8_t    uint8;
 typedef std::uint16_t   uint16;
 
+
+
 /** Define the size of the log ring buffer in bytes (must be a power of 2)  */
 #ifndef LogRingBufferSize
     #define LogRingBufferSize       512
@@ -33,6 +35,11 @@ typedef std::uint16_t   uint16;
 #ifdef DefineStoreLogSizeType
     #define StoreLogSizeType        uint8
 #endif
+
+#if defined(UseLogCompression) && !defined(StoreLogSizeType)
+    #error "Enabling log compression requires having a stored log size type"
+#endif
+
 /** Define the error strategy when a log can't be saved in the log buffer.
     By default, it calls a function in Log namespace with signature "void errorStoringArgumentsFor(const char* format)" is called
     If set to 1, an exception Log::Exception(const char* format) is thrown instead */
@@ -99,6 +106,16 @@ namespace Log
 
 namespace Log
 {
+    // Log items are made to be as compact as possible. They fit in a machine word size, and store the information for reconstructing the log (except the arguments)
+    // In addition, we also reuse the unused bit to compress (run-length-encode) similar log. In effect, if a log is the same as the previously stored log, instead of
+    // storing a new log item with the same parameters, we simply set a bit in the item and store the repeat count after the log (with variable length coding).
+    // If the parameters are different, another bit is used and only the new parameters are stored in the ring buffer.
+    // These two bits are stored in the low bit of the msg's address (since on many system this address is aligned to the word size)
+
+    // This allow some interesting space saving here:
+    // 1. For log with no parameters, it saves a complete LogItem storage (usually 4 or 8 bytes) minus the repeat count (1 byte), for the first repeat,
+    //    then it's 4 to 8 bytes per repeated log (more if the log is saved with its file, mask and/or line dump)
+    // 2. For a log with different parameters, it saves a complete LogItem storage (usually 4 or 8 bytes), and more if the log is saved with its file, mask and/or line dump
     #pragma pack(push, 1)
     template <std::size_t ptrSize = 8>
     struct LogItemT
@@ -106,13 +123,24 @@ namespace Log
         uint32 FileDump : 1;
         uint32 LineDump : 1;
         uint32 MaskType : 2;
+#ifdef UseLogCompression
+        std::uintptr_t msg : 58;
+        uint32 Repeat   : 1;
+        uint32 Param    : 1;
+#else
         std::uintptr_t msg : 60;
+#endif
 
+#ifdef UseLogCompression
+        static constexpr std::uintptr_t computeAddress(const char * fmt) { return  ((std::uintptr_t)fmt) & 0x00FFFFFFFFFFFFFCULL; } // On 64 bits system, bits 63-48 are never used on userspace and aligned on 4 bytes at least
+        static constexpr const char*    makePointer(const std::uintptr_t fmt) { return  (const char*)fmt; }
+#else
         static constexpr std::uintptr_t computeAddress(const char * fmt) { return  ((std::uintptr_t)fmt) & 0x00FFFFFFFFFFFFFFULL; } // On 64 bits system, bits 63-48 are never used on userspace
         static constexpr const char*    makePointer(const std::uintptr_t fmt) { return  (const char*)fmt; }
-
+#endif
         void saveFormat(const char * fmt) { msg = computeAddress(fmt); }
         const char * loadFormat() const { return reinterpret_cast<const char*>(msg); }
+        bool isRepeated(const LogItemT & item) const { return msg == item.msg && FileDump == item.FileDump && LineDump == item.LineDump && MaskType == item.MaskType; }
     };
 
     template <>
@@ -121,11 +149,17 @@ namespace Log
         uint32_t FileDump : 1;
         uint32_t LineDump : 1;
         uint32_t MaskType : 2;
+#ifdef UseLogCompression
+        std::uintptr_t msg : 26;
+        uint32 Repeat   : 1;
+        uint32 Param    : 1;
+#else
         std::uintptr_t msg : 28; // We limit ourselves to only 28 bits for the pointer, which spans only 256MB range:
                                  // This is likely to fail by default on any usual 32 bit system.
                                  // However, on a microcontroller, 256MB is already a large area and it might fit the whole flash
                                  // The basic idea with this scheme is to store the minimal address seen and the offset from this address
                                  // If it doesn't work, it'll crash
+#endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C2) || defined(CONFIG_IDF_TARGET_ESP32S3)
         // On ESP32 the flash is is mapped at 0x4200 0000, so there's no point in storing this offset here as it'll always be the same address
@@ -142,11 +176,17 @@ namespace Log
         static constexpr std::uintptr_t minAddress() { return 0; }
     #endif
 #endif
+
+#ifdef UseLogCompression
+        static constexpr std::uintptr_t computeAddress(const char * fmt) { return ((std::uintptr_t)fmt - minAddress()) & 0xFFFFFFFC; }
+        static constexpr const char*    makePointer(const std::uintptr_t fmt) { return reinterpret_cast<const char*>(fmt + minAddress()); }
+#else
         static constexpr std::uintptr_t computeAddress(const char * fmt) { return (std::uintptr_t)fmt - minAddress(); }
         static constexpr const char*    makePointer(const std::uintptr_t fmt) { return reinterpret_cast<const char*>(fmt + minAddress()); }
-
+#endif
         void saveFormat(const char * fmt) { msg = computeAddress(fmt); }  // On 64 bits system, bits 63-48 are never used on userspace
         const char * loadFormat() const { return makePointer(msg); }
+        bool isRepeated(const LogItemT & item) const { return msg == item.msg && FileDump == item.FileDump && LineDump == item.LineDump && MaskType == item.MaskType; }
     };
     // Use the version that's supported on your platform word size
     typedef LogItemT<sizeof(void*)> LogItem;
@@ -195,6 +235,9 @@ namespace Log
         Mutex                           mutex;
         /** Read and write pointer in the ring buffer */
         uint32                          r, w;
+#ifdef UseLogCompression
+        uint32                          lastLogPos = sizePowerOf2;
+#endif
         /** Buffer size minus 1 in bytes */
         static constexpr const uint32   sm1 = sizePowerOf2 - 1;
         /** The buffer to write packets into */
@@ -338,9 +381,9 @@ namespace Log
             if (!load(size, head, sh, tail, st)) return false;
             memcpy(buf, head, sh);
             memcpy(buf + sh, tail, st);
-            uint64 r = 0;
-            decode_u64(buf, r);
-            i = static_cast<std::decay_t<decltype(i)>>(r);
+            uint64 res = 0;
+            decode_u64(buf, res);
+            i = static_cast<std::decay_t<decltype(i)>>(res);
             return true;
         }
         /** Specialization for signed integral to load from VLC */
@@ -354,9 +397,9 @@ namespace Log
             if (!load(size, head, sh, tail, st)) return false;
             memcpy(buf, head, sh);
             memcpy(buf + sh, tail, st);
-            int64 r = 0;
-            decode_i64(buf, r);
-            i = static_cast<std::decay_t<decltype(i)>>(r);
+            int64 res = 0;
+            decode_i64(buf, res);
+            i = static_cast<std::decay_t<decltype(i)>>(res);
             return true;
         }
         /** Load a string from the buffer
@@ -394,6 +437,75 @@ namespace Log
 
         bool load(double & i) { return loadType(i); }
         bool load(long double & i) { return loadType(i); }
+
+#if UseLogCompression == 1
+        /** Check if the data at position readPos match exactly the given value.
+            @return true if it does and increase readPos by the required size in that case for the next value type.
+                         else it returns false and doesn't modify readPos */
+        bool matchValue(uint32 & readPos, const auto & val)
+        {
+            uint32 rSave = r;
+            r = readPos;
+            auto tmp = val;
+            if (!load(tmp) || tmp != val) { r = rSave; return false; }
+            readPos = r;
+            r = rSave;
+            return true;
+        }
+        /** Check if the data at position readPos match exactly the given value.
+            @return true if it does and increase readPos by the required size in that case for the next value type.
+                         else it returns false and doesn't modify readPos */
+        bool matchValue(uint32 & readPos, void * val)
+        {
+            uint32 rSave = r;
+            r = readPos;
+            const void * tmp = 0;
+            if (!load(tmp) || tmp != val) { r = rSave; return false; }
+            readPos = r;
+            r = rSave;
+            return true;
+        }
+        /** Check if the data at position readPos match exactly the given value.
+            @return true if it does and increase readPos by the required size in that case for the next value type.
+                         else it returns false and doesn't modify readPos */
+        bool matchValue(uint32 & readPos, const char * val, const std::size_t & len)
+        {
+            uint32 rSave = r;
+            r = readPos;
+            std::size_t expLen = 0;
+            if (!loadString(nullptr, expLen) || expLen != len) { r = rSave; return false; }
+            // Then compare the string itself to match, ignoring the last 0 sentinel that might not be present in the string itself
+            if (memcmp(val, &buffer[r], std::min((uint32)len - 1, sm1 - r + 1))) { r = rSave; return false; }
+            if (len - 1 > (sm1 - r + 1) && memcmp(&val[sm1 - r + 1], buffer, len - 1 - (sm1 - r + 1))) { r = rSave; return false; }
+            readPos = (r + len) & sm1;
+            r = rSave;
+            return true;
+        }
+
+        /** Generic load a value from the buffer */
+        template<typename T>
+        bool loadTypeAt(const uint32 pos, T & val)
+        {
+            const uint8 * head = 0, * tail = 0;
+            uint32 sh = 0, st = 0;
+            uint32 rSave = r; r = pos & sm1;
+            if (!load(sizeof(val), head, sh, tail, st)) { r = rSave; return false; }
+            r = rSave;
+            memcpy((uint8*)&val, head, sh);
+            memcpy((uint8*)&val + sh, tail, st);
+            return true;
+        }
+
+        /** The generic save function for the logs */
+        template <typename T>
+        bool saveTypeAt(const uint32 pos, const T val)
+        {
+            uint32 wSave = w; w = pos & sm1;
+            bool ret = save((const uint8*)&val, sizeof(val));
+            w = wSave;
+            return ret;
+        }
+#endif
 
 #if DeleteOldLogsWhenFull == 1
         inline bool consume(const uint32 s) { if (getSize() <= s) return false; r = (r + s) & sm1; return true; }
@@ -910,6 +1022,10 @@ namespace CompileTime
     {
         template <typename A>
         static constexpr bool store(const A & a) { T t = (T)std::get<0>(a); return Log::logBuffer.save(t); }
+#if UseLogCompression == 1
+        template <typename A>
+        static constexpr bool check(uint32 & readPos, const A & a) { T t = (T)std::get<0>(a); return Log::logBuffer.matchValue(readPos, t); }
+#endif
         static constexpr std::size_t consumed = 1;
     };
     template <>
@@ -917,6 +1033,10 @@ namespace CompileTime
     {
         template <typename A>
         static constexpr bool store(const A & a) { char * t = (char*)std::get<0>(a); return Log::logBuffer.saveString(t, 0); }
+#if UseLogCompression == 1
+        template <typename A>
+        static constexpr bool check(uint32 & readPos, const A & a) { char * t = (char*)std::get<0>(a); return Log::logBuffer.matchValue(readPos, t, strlen(t)); }
+#endif
         static constexpr std::size_t consumed = 1;
     };
     template <>
@@ -924,12 +1044,21 @@ namespace CompileTime
     {
         template <typename A>
         static constexpr bool store(const A & a) { return true; }
+#if UseLogCompression == 1
+        template <typename A>
+        static constexpr bool check(uint32 & readPos, const A & a) { return true; }
+#endif
+
     };
     template <typename T>
     struct StoreArgumentInLogBuffer<TypeList<int, T>>
     {
         template <typename A>
         static constexpr bool store(const A & a) { int len = std::get<0>(a); T type = (T)std::get<1>(a); return Log::logBuffer.save(len) && Log::logBuffer.save(type); }
+#if UseLogCompression == 1
+        template <typename A>
+        static constexpr bool check(uint32 & readPos, const A & a) { int len = std::get<0>(a); T type = (T)std::get<1>(a); return Log::logBuffer.matchValue(readPos, len) && Log::logBuffer.matchValue(readPos, type); }
+#endif
         static constexpr std::size_t consumed = 2;
     };
     template <>
@@ -937,6 +1066,10 @@ namespace CompileTime
     {
         template <typename A>
         static constexpr bool store(const A & a) { int len = std::get<0>(a); char * type = (char*)std::get<1>(a); return Log::logBuffer.saveString(type, len); }
+#if UseLogCompression == 1
+        template <typename A>
+        static constexpr bool check(uint32 & readPos, const A & a) { int len = std::get<0>(a); char * type = (char*)std::get<1>(a); return Log::logBuffer.matchValue(readPos, type, len); }
+#endif
         static constexpr std::size_t consumed = 2;
     };
 
@@ -961,6 +1094,16 @@ namespace CompileTime
                 return popTupleFront(popTupleFront(a));
             else return popTupleFront(a);
         }
+#if UseLogCompression == 1
+        template <typename Tuple>
+        static constexpr auto check(bool & result, uint32 & readPos, const Tuple & a)
+        {
+            result = result && StoreArgumentInLogBuffer<Type>::check(readPos, a);
+            if constexpr (StoreArgumentInLogBuffer<Type>::consumed == 2)
+                return popTupleFront(popTupleFront(a));
+            else return popTupleFront(a);
+        }
+#endif
     };
 
     template <>
@@ -968,12 +1111,21 @@ namespace CompileTime
     {
         template <typename Tuple>
         static constexpr auto store(bool & result, const Tuple & a) { return a; }
+#if UseLogCompression == 1
+        template <typename Tuple>
+        static constexpr auto check(bool & result, uint32 & readPos, const Tuple & a) { return a; }
+#endif
+
     };
     template <typename Type>
     struct StoreArgumentsInBuffer<const TypeList<Type>>
     {
         template <typename Tuple>
         static constexpr auto store(bool & result, const Tuple & a) { return StoreArgumentsInBuffer<Type>::store(result, a); }
+#if UseLogCompression == 1
+        template <typename Tuple>
+        static constexpr auto check(bool & result, uint32 & readPos, const Tuple & a) { return StoreArgumentsInBuffer<Type>::check(result, readPos, a); }
+#endif
     };
 
     template <typename Type, typename ... Types>
@@ -984,6 +1136,14 @@ namespace CompileTime
         {
             return StoreArgumentsInBuffer<const TypeList<Types...>>::store(result, StoreArgumentsInBuffer<Type>::store(result, a));
         }
+
+#if UseLogCompression == 1
+        template <typename Tuple>
+        static constexpr auto check(bool & result, uint32 & readPos, const Tuple & a)
+        {
+            return StoreArgumentsInBuffer<const TypeList<Types...>>::check(result, readPos, StoreArgumentsInBuffer<Type>::check(result, readPos, a));
+        }
+#endif
     };
 
     template <typename TL, typename... Args>
@@ -995,6 +1155,17 @@ namespace CompileTime
         return result;
     }
 
+#if UseLogCompression == 1
+    template <typename TL, typename... Args>
+    constexpr static bool checkForSameRepeatedArgumentsInLogBuffer(Args && ... args)
+    {
+        auto tup = std::make_tuple(args...);
+        bool result = true;
+        uint32 r = Log::logBuffer.fetchReadPos();
+        StoreArgumentsInBuffer<TL>::check(result, r, tup);
+        return result;
+    }
+#endif
 
     struct LogItemSaver : public Log::LogItem
     {
@@ -1006,8 +1177,27 @@ namespace CompileTime
             LineDump = saveLine ? 1 : 0;
             MaskType = mask < 4 ? mask : 3;
             saveFormat(str);
-#ifdef StoreLogSizeType
+
+#if defined(StoreLogSizeType) || UseLogCompression == 1
             wp = Log::logBuffer.fetchWritePos(); // Save the current write position just after the item.
+            // Image of the log buffer for a log item is expected like this:
+            // [     R  ... W            ]
+            // [-------------------------]
+            // [            LSFLMPPPPC   ] with L: log item, S: store log size type, F: opt. file name pointer address, L: opt. line, M: opt. Mask, C: opt. count, P: opt. parameters
+
+#endif
+#if UseLogCompression == 1
+            // Compare the last log format to check if it's a repetition
+            if (Log::logBuffer.lastLogPos <= Log::logBuffer.sm1)
+            {
+                Log::LogItem previous{};
+                if (Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos, previous) && previous.Param == 0 && previous.isRepeated(*this))
+                {
+                    // Ok, the log appears to be a repetition, so let's mark it as so
+                    repeated = true;
+                    return; // Skip saving anything here to the log buffer
+                }
+            }
 #endif
             Log::logBuffer.saveType(*(const Log::LogItem *)this); // Save the log item first
 #ifdef StoreLogSizeType
@@ -1018,12 +1208,25 @@ namespace CompileTime
             if (loc && saveLine) Log::logBuffer.save(loc->line());
             if (mask > 3) Log::logBuffer.save(mask);
         }
-#ifdef StoreLogSizeType
+#if defined(StoreLogSizeType) || UseLogCompression == 1
         uint32 wp;
 #endif
         Log::ScopedLock lock;
         bool kept = false;
+#if UseLogCompression == 1
+        bool repeated = false;
+#endif
     };
+
+    static inline void reportError(const char * string)
+    {
+#if ThrowOnError == 1
+        throw Log::Exception(string);
+#else
+        Log::errorStoringArgumentsFor(string);
+#endif
+    }
+
     template <const auto string>
     struct LogFormatter : public LogItemSaver
     {
@@ -1046,31 +1249,90 @@ namespace CompileTime
             // But if given a %s, we have to store a string (don't convert to void*), since the pointed string might not exists anymore once we'll dump the log.
             // Also, if given a %.*s, the string might not be zero terminated so when storing it, we have to only store (and access) the expected characters length.
             constexpr auto type = SpecifiersTable<N>::getPromotedArgumentsType(impl_string, std::make_index_sequence<N>{});
+#if UseLogCompression == 1
+            Log::LogItem previous{};
+            if (repeated && checkForSameRepeatedArgumentsInLogBuffer<decltype(type)>(std::forward<Args>(args)...))
+            {   // Need to modify the count in the previous log item
+                Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos, previous);
+                previous.Repeat = 1;
+                Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos, previous);
+
+                // Fix the buffer now
+                // [     R  ... W            ]
+                // [-------------------------]
+                // [            LSFLMPPPPC   ] with L: log item, S: store log size type, F: opt. file name pointer address, L: opt. line, M: opt. Mask, C: opt. count, P: opt. parameters
+
+                StoreLogSizeType size = 0, count = 0;
+                if (   !Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos + sizeof(previous), size)
+                    || !size || !Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size, count))
+                {
+                    reportError("Can't read repeat count");
+                    return;
+                }
+                count++;
+                if (!Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size, count))
+                {
+                    reportError("Can't save repeat count");
+                }
+                return;
+            }
+
+            if (repeated)
+            {
+                Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos, previous);
+                previous.Repeat = 1;
+                previous.Param = 1;
+                Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos, previous);
+
+                // We now have to save the additional parameters after the previous storage, that is like this:
+                // [     R  ...          W   ]
+                // [-------------------------]
+                // [P           LSFLMPPPPCPPP] with L: log item, S: store log size type, F: opt. file name pointer address, L: opt. line, M: opt. Mask, C: opt. size of parameters, P: opt. parameters
+                StoreLogSizeType blank {};
+                Log::logBuffer.saveType(blank); // This reserves the space for the storing the number of bytes used for the parameters in the buffer
+            }
+#endif
+
             if (!storeArgumentsInLogBuffer<decltype(type)>(std::forward<Args>(args)...))
             {   // ISSUE HERE, what to do if we can't store the log? Drop it? Silently?
-#if ThrowOnError == 1
-                throw Log::Exception(string);
-#else
-                Log::errorStoringArgumentsFor(string);
-#endif
+                reportError(string);
             }
+
+#if UseLogCompression == 1
+            if (repeated)
+            {   // We need to say that the arguments are different, so we need to mark them here (hopefully, it's the same as a normal storage, except for the log item itself)
+                uint32 cp = Log::logBuffer.fetchWritePos();
+                // Ugly modulo calculus without a division, computing (cp - wp - sizeof(StoreLogSizeType), that is, the distance between last P and C in the previous diagram
+                uint32 s = (cp + (Log::logBuffer.sm1 + 1) - wp - sizeof(StoreLogSizeType)) & Log::logBuffer.sm1;
+                if (s >= 1<<(sizeof(StoreLogSizeType)*8))
+                {   // Another ISSUE HERE, we can't store the actual consumed size in the given type
+                    // So we decide to revert back the log item to before the saving, this log is lost anyway, we'll never be able to remove it afterward. Let's leave a trace here
+                    Log::logBuffer.rollbackWrite(wp);
+                    // We can't revert the Param to 0, since we might be the 3rd repeated log with params.
+                    reportError(string);
+                }
+                Log::logBuffer.saveTypeAt(wp, (StoreLogSizeType)s);
+                return;
+            }
+#endif
+
 #ifdef StoreLogSizeType
             uint32 cp = Log::logBuffer.fetchWritePos();
-            // Ugly modulo calculus without a division
+            // Ugly modulo calculus without a division, computing (cp - wp - sizeof(LogItem) - sizeof(StoreLogSizeType), that is, the distance between C and F in the previous diagram
             uint32 s = (cp + (Log::logBuffer.sm1 + 1) - wp - sizeof(Log::LogItem) - sizeof(StoreLogSizeType)) & Log::logBuffer.sm1;
             if (s >= 1<<(sizeof(StoreLogSizeType)*8))
             {   // Another ISSUE HERE, we can't store the actual consumed size in the given type
                 // So we decide to revert back the log item to before the saving, this log is lost anyway, we'll never be able to remove it afterward. Let's leave a trace here
                 Log::logBuffer.rollbackWrite(wp);
-  #if ThrowOnError == 1
-                throw Log::Exception("Log too large");
-  #else
-                Log::errorStoringArgumentsFor("Log too large");
-  #endif
+                reportError(string);
             }
             Log::logBuffer.rollbackWrite((wp + sizeof(Log::LogItem)) & Log::logBuffer.sm1);
             Log::logBuffer.saveType((StoreLogSizeType)s);
             Log::logBuffer.rollbackWrite(cp);
+#endif
+#if UseLogCompression == 1
+            if (!repeated)
+                Log::logBuffer.lastLogPos = wp;
 #endif
         }
 
@@ -1197,6 +1459,41 @@ namespace CompileTime
         StackString s(buffer, sizeCounter.allocSize + 1);
 
         if (!dumpLogImpl(specCount, file, line, format, s)) return false;
+
+#if UseLogCompression == 1
+        StoreLogSizeType count = 0;
+        if (item.Repeat && !item.Param)
+        {
+            if (!Log::logBuffer.load(count)) return false;
+        }
+        // And call the callback with that string
+        if constexpr(std::is_same_v<decltype(func(s.buffer, mask, count + 1)), bool>)
+        {
+            bool ret = func(s.buffer, mask, count + 1);
+            if (!ret) { Log::logBuffer.rollback(readPos); return false; }
+        } else func(s.buffer, mask, count + 1);
+
+        if (item.Param)
+        {   // Now we have the repeated log, let's dump it from here directly
+            if (!Log::logBuffer.load(count)) return false;
+            const uint32 argPos2 = Log::logBuffer.fetchReadPos();
+            StackString sizeCounter2{nullptr,0};
+            // Dump the log item to a invalid buffer to count the required allocation size
+            if (!dumpLogImpl(specCount, file, line, format, sizeCounter2)) return false;
+
+            Log::logBuffer.rollback(argPos2);
+            char * buffer2 = (char*)alloca(sizeCounter.allocSize + 1);
+            StackString s2(buffer, sizeCounter.allocSize + 1);
+
+            if (!dumpLogImpl(specCount, file, line, format, s2)) return false;
+
+            if constexpr(std::is_same_v<decltype(func(s2.buffer, mask, 1)), bool>)
+            {
+                bool ret = func(s2.buffer, mask, 1);
+                if (!ret) { Log::logBuffer.rollback(readPos); return false; }
+            } else func(s2.buffer, mask, 1);
+        }
+#else
         // And call the callback with that string
         if constexpr(std::is_same_v<decltype(func(s.buffer, mask)), bool>)
         {
@@ -1204,6 +1501,7 @@ namespace CompileTime
             if (!ret) Log::logBuffer.rollback(readPos);
             return ret;
         } else func(s.buffer, mask);
+#endif
         return true;
     }
 }
