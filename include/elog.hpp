@@ -1157,11 +1157,11 @@ namespace CompileTime
 
 #if UseLogCompression == 1
     template <typename TL, typename... Args>
-    constexpr static bool checkForSameRepeatedArgumentsInLogBuffer(Args && ... args)
+    constexpr static bool checkForSameRepeatedArgumentsInLogBuffer(uint32 r, Args && ... args)
     {
         auto tup = std::make_tuple(args...);
         bool result = true;
-        uint32 r = Log::logBuffer.fetchReadPos();
+        // r is set to the position in the buffer for the first parameter to check against
         StoreArgumentsInBuffer<TL>::check(result, r, tup);
         return result;
     }
@@ -1195,6 +1195,12 @@ namespace CompileTime
                 {
                     // Ok, the log appears to be a repetition, so let's mark it as so
                     repeated = true;
+
+                    uint8 buf[9] = {};
+                    uint8 locSize = loc ? Log::encode_u64(buf, Log::LogItem::computeAddress(loc->file_name())) : 0;
+                    uint8 lineSize = loc && saveLine ? Log::encode_u64(buf, loc->line()) : 0;
+                    uint8 maskSize = mask > 3 ? Log::encode_u64(buf, mask) : 0;
+                    firstParamPos = Log::logBuffer.lastLogPos + sizeof(StoreLogSizeType) + sizeof(previous) + locSize + lineSize + maskSize;
                     return; // Skip saving anything here to the log buffer
                 }
             }
@@ -1215,6 +1221,7 @@ namespace CompileTime
         bool kept = false;
 #if UseLogCompression == 1
         bool repeated = false;
+        uint32 firstParamPos = 0;
 #endif
     };
 
@@ -1251,7 +1258,7 @@ namespace CompileTime
             constexpr auto type = SpecifiersTable<N>::getPromotedArgumentsType(impl_string, std::make_index_sequence<N>{});
 #if UseLogCompression == 1
             Log::LogItem previous{};
-            if (repeated && checkForSameRepeatedArgumentsInLogBuffer<decltype(type)>(std::forward<Args>(args)...))
+            if (repeated && checkForSameRepeatedArgumentsInLogBuffer<decltype(type)>(firstParamPos, std::forward<Args>(args)...))
             {   // Need to modify the count in the previous log item
                 Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos, previous);
                 previous.Repeat = 1;
@@ -1264,13 +1271,16 @@ namespace CompileTime
 
                 StoreLogSizeType size = 0, count = 0;
                 if (   !Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos + sizeof(previous), size)
-                    || !size || !Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size, count))
+                    || !size || !Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size + sizeof(size), count))
                 {
-                    reportError("Can't read repeat count");
+                    // It's possible the count doesn't exist yet, so we need to save it first
+                    StoreLogSizeType one = (StoreLogSizeType)0;
+                    if (!Log::logBuffer.saveType(one))
+                        reportError("Can't save repeat count");
                     return;
                 }
                 count++;
-                if (!Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size, count))
+                if (!Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size + sizeof(size), count))
                 {
                     reportError("Can't save repeat count");
                 }
@@ -1461,17 +1471,19 @@ namespace CompileTime
         if (!dumpLogImpl(specCount, file, line, format, s)) return false;
 
 #if UseLogCompression == 1
-        StoreLogSizeType count = 0;
+        int count = 0;
         if (item.Repeat && !item.Param)
         {
-            if (!Log::logBuffer.load(count)) return false;
+            StoreLogSizeType c = 0;
+            if (!Log::logBuffer.load(c)) return false;
+            count = c+1;
         }
         // And call the callback with that string
-        if constexpr(std::is_same_v<decltype(func(s.buffer, mask, count + 1)), bool>)
+        if constexpr(std::is_same_v<decltype(func(s.buffer, mask, count)), bool>)
         {
-            bool ret = func(s.buffer, mask, count + 1);
+            bool ret = func(s.buffer, mask, count);
             if (!ret) { Log::logBuffer.rollback(readPos); return false; }
-        } else func(s.buffer, mask, count + 1);
+        } else func(s.buffer, mask, count);
 
         if (item.Param)
         {   // Now we have the repeated log, let's dump it from here directly
@@ -1487,11 +1499,11 @@ namespace CompileTime
 
             if (!dumpLogImpl(specCount, file, line, format, s2)) return false;
 
-            if constexpr(std::is_same_v<decltype(func(s2.buffer, mask, 1)), bool>)
+            if constexpr(std::is_same_v<decltype(func(s2.buffer, mask, -1)), bool>)
             {
-                bool ret = func(s2.buffer, mask, 1);
+                bool ret = func(s2.buffer, mask, -1);
                 if (!ret) { Log::logBuffer.rollback(readPos); return false; }
-            } else func(s2.buffer, mask, 1);
+            } else func(s2.buffer, mask, -1);
         }
 #else
         // And call the callback with that string
