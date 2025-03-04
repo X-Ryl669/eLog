@@ -149,7 +149,7 @@ main.cpp:70:5:   required from here
 ../include/log.hpp:934:32: note: 'std::is_same_v<CompileTime::TypeList<int, double, void*>, CompileTime::TypeList<double, double, int, void*> >' evaluates to false
 ```
 
-The error message from the compiler give the reason why it failed, the number of argument isn't good (expecting 4 arguments, 3 given) and the argument type isn't matching either (the first expected argument is an double, a int was given). While the former error is easy to spot, the latter would have been silently accepted with printf and the resulting code would have **crashed** at runtime.
+The error messages from the compiler give the reason why it failed, the number of argument isn't good (expecting 4 arguments, 3 given) and the argument type isn't matching either (the first expected argument is an double, a int was given). While the former error is easy to spot, the latter would have been silently accepted with printf and the resulting code would have **crashed** at runtime.
 
 ## Configuration
 
@@ -217,3 +217,20 @@ void LogCallbackImpl(const char * file, const int line, const uint32 mask, const
 // Start of your main:
 Log::LogCallback = LogCallbackImpl;
 ```
+
+### Log compression
+This feature, when enabled, will detect when a log is repeated (with same or different arguments) and only store what is required to reproduce the new log.
+This actually implies checking for the same formating message (a pointer check is used here) and then for each individual parameters values.
+In case the parameters are the same, a repeat flag is set on the previous log and a count is stored instead of the complete and redundant log item.
+If the parameters are different, a param flag is set on the previous log and a size and a new section of parameters are stored after the previous log item.
+In that case a third repeated log will force storing a complete log item.
+
+
+The compression saving is thus `(N - 1) * log size - sizeof(StoreLogSizeType)` bytes for N repeated logs.
+For different parameter logs, the saving is `sizeof(Log::LogItem) + sizeof(char*) if file loc + encodedLen(line) if line + encodedLen(mask) if mask - sizeof(StoreLogSizeType)` bytes (typically, between 3 bytes to 24 bytes depending on flags).
+
+
+This also implies that the `dumpLog` can now call the given lambda function multiple time per log if repeated parameters are found (it can be called twice).
+The `dumpLog` callback function requires a final additional argument `int count` that contains the number of repeated log saved if positive, 0 for non repeated log or -1 if the log is repeated with different parameters.
+
+You'll need to define the `UseLogCompression` macro to enable this feature.
