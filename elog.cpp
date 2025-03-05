@@ -209,18 +209,20 @@ namespace CompileTime
         return true;
     }
   #endif
+
+  #ifndef UseLogCompression
     bool extractFirstLog()
     {
-#ifndef StoreLogSizeType
+    #ifndef StoreLogSizeType
         const uint32 r = Log::logBuffer.fetchReadPos();
-#endif
+    #endif
         Log::LogItem item;
         if (!Log::logBuffer.loadType(item)) return false;
-#ifdef StoreLogSizeType
+    #ifdef StoreLogSizeType
         StoreLogSizeType size;
         if (!Log::logBuffer.loadType(size)) return false;
         return Log::logBuffer.consume(size); // Already consumed the size value above, that's not included in the computation
-#else
+    #else
         // Check if we need to format file and line and mask first
         if (!extractFirstLog(item))
         {
@@ -228,8 +230,27 @@ namespace CompileTime
             return false;
         }
         return true;
-#endif
+    #endif
     }
+  #endif
+  #if UseLogCompression == 1
+    bool extractFirstLog()
+    {
+        Log::LogItem item;
+        if (!Log::logBuffer.loadType(item)) return false;
+        StoreLogSizeType size;
+        if (!Log::logBuffer.loadType(size)) return false;
+        if (!item.Repeat) return Log::logBuffer.consume(size);
+        if (item.Param)
+        {   // Need to account for the additional parameters here until we're done with this log
+            if (!Log::logBuffer.loadType(size)) return false;
+            return Log::logBuffer.consume(size);
+        }
+        // Consume the count here
+        return Log::logBuffer.consume(sizeof(size));
+    }
+  #endif
+
 #endif
 
 
