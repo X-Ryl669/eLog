@@ -1003,7 +1003,7 @@ namespace CompileTime
         inline const char * file_name() const { return _filename; }
         inline int line() const { return _line; }
     };
-    #define SourceLoc CompileTime::sourceloc{CompileTime::basename<CompileTime::str{__FILE__}>(), __LINE__}
+    #define SourceLoc CompileTime::sourceloc{CompileTime::str_ref<CompileTime::basename<CompileTime::str{__FILE__}>()>{}.data, __LINE__}
 //    using sourceloc = std::source_location;
 
     /** Storing arguments to the log buffer is a bit more complex because the expanded argument array can't be iterated
@@ -1211,7 +1211,7 @@ namespace CompileTime
             Log::logBuffer.saveType(blank); // This reserves the space for the storing the number of bytes used for this item in the buffer
 #endif
             if (loc) Log::logBuffer.save(Log::LogItem::computeAddress(loc->file_name())); // Don't save the string here since it should be in the binary, so only store its pointer
-            if (loc && saveLine) Log::logBuffer.save(loc->line());
+            if (loc && saveLine) Log::logBuffer.save((uint64)loc->line());
             if (mask > 3) Log::logBuffer.save(mask);
         }
 #if defined(StoreLogSizeType) || UseLogCompression == 1
