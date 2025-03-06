@@ -1495,7 +1495,7 @@ namespace CompileTime
 
             Log::logBuffer.rollback(argPos2);
             char * buffer2 = (char*)alloca(sizeCounter.allocSize + 1);
-            StackString s2(buffer, sizeCounter.allocSize + 1);
+            StackString s2(buffer2, sizeCounter.allocSize + 1);
 
             if (!dumpLogImpl(specCount, file, line, format, s2)) return false;
 
