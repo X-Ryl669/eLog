@@ -151,8 +151,8 @@ namespace Log
         uint32_t MaskType : 2;
 #ifdef UseLogCompression
         std::uintptr_t msg : 26;
-        uint32 Repeat   : 1;
-        uint32 Param    : 1;
+        uint32_t Repeat   : 1;
+        uint32_t Param    : 1;
 #else
         std::uintptr_t msg : 28; // We limit ourselves to only 28 bits for the pointer, which spans only 256MB range:
                                  // This is likely to fail by default on any usual 32 bit system.
@@ -473,11 +473,11 @@ namespace Log
             uint32 rSave = r;
             r = readPos;
             std::size_t expLen = 0;
-            if (!loadString(nullptr, expLen) || expLen != len) { r = rSave; return false; }
+            if (!loadString(nullptr, expLen) || expLen != (len+1)) { r = rSave; return false; }
             // Then compare the string itself to match, ignoring the last 0 sentinel that might not be present in the string itself
             if (memcmp(val, &buffer[r], std::min((uint32)len - 1, sm1 - r + 1))) { r = rSave; return false; }
             if (len - 1 > (sm1 - r + 1) && memcmp(&val[sm1 - r + 1], buffer, len - 1 - (sm1 - r + 1))) { r = rSave; return false; }
-            readPos = (r + len) & sm1;
+            readPos = (r + len + 1) & sm1;
             r = rSave;
             return true;
         }
@@ -504,6 +504,14 @@ namespace Log
             bool ret = save((const uint8*)&val, sizeof(val));
             w = wSave;
             return ret;
+        }
+
+        bool duplicateData(const uint32 from, const uint32 to)
+        {
+            uint32 wSave = w;
+            if (!save(&buffer[from], std::min((uint32)to - from, sm1 - from))) { w = wSave; return false; }
+            if (to < from && !save(buffer, to)) { w = wSave; return false; }
+            return true;
         }
 #endif
 
@@ -630,7 +638,7 @@ namespace CompileTime
     //    Nothing              = 'n', // Not supported in our parsing below
     };
 
-    /** Check if this specifier has a length, like in %*specifier */
+    /** Check if this specifier has a length, like in %*specifier. In that case, the specifier char is stored as uppercase */
     static constexpr bool hasSpecifierLength(Specifier val) { return val != Specifier::Unknown && (char)val <= 'Z'; }
     static constexpr Specifier makeSpecifier(const char val, bool len = false) { return Specifier{len ? (char)(val - 32) : val}; }
     static constexpr Specifier specifierType(const Specifier v) { return Specifier{(char)v <= 'Z' ? (char)((char)v + 32) : (char)v}; }
@@ -1176,6 +1184,7 @@ namespace CompileTime
             FileDump = loc ? 1 : 0;
             LineDump = saveLine ? 1 : 0;
             MaskType = mask < 4 ? mask : 3;
+            Repeat = Param = 0;
             saveFormat(str);
 
 #if defined(StoreLogSizeType) || UseLogCompression == 1
@@ -1279,27 +1288,45 @@ namespace CompileTime
                         reportError("Can't save repeat count");
                     return;
                 }
-                count++;
-                if (!Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size + sizeof(size), count))
-                {
-                    reportError("Can't save repeat count");
+                if (count != (StoreLogSizeType)-1)
+                {   // We didn't overflow the count, it's ok to save it here. Else, simply store a new virgin log instead
+                    count++;
+                    if (!Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos + sizeof(previous) + size + sizeof(size), count))
+                    {
+                        reportError("Can't save repeat count");
+                    }
+                    return;
                 }
-                return;
             }
 
             if (repeated)
             {
                 Log::logBuffer.loadTypeAt(Log::logBuffer.lastLogPos, previous);
-                previous.Repeat = 1;
-                previous.Param = 1;
-                Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos, previous);
+                if (previous.Repeat == 1)
+                {   // Terrible case. The previous log was already a pure repeating log (with same parameter). However, it's not matching the same arguments anymore
+                    // We can't store the new arguments now, since it will remove the previous repeat count.
+                    // Instead, we'll just copy the previous log header again, and start like a new, non repeated log.
+                    if (!Log::logBuffer.duplicateData(Log::logBuffer.lastLogPos, firstParamPos))
+                    {
+                        reportError("Can't duplicate repeated log");
+                    }
+                    // Act like if no repeating happened
+                    repeated = false;
+                    previous.Repeat = 0; previous.Param = 0;
+                    Log::logBuffer.saveTypeAt(wp, previous);
+                } else
+                {
+                    previous.Repeat = 1;
+                    previous.Param = 1;
+                    Log::logBuffer.saveTypeAt(Log::logBuffer.lastLogPos, previous);
 
-                // We now have to save the additional parameters after the previous storage, that is like this:
-                // [     R  ...          W   ]
-                // [-------------------------]
-                // [P           LSFLMPPPPCPPP] with L: log item, S: store log size type, F: opt. file name pointer address, L: opt. line, M: opt. Mask, C: opt. size of parameters, P: opt. parameters
-                StoreLogSizeType blank {};
-                Log::logBuffer.saveType(blank); // This reserves the space for the storing the number of bytes used for the parameters in the buffer
+                    // We now have to save the additional parameters after the previous storage, that is like this:
+                    // [     R  ...          W   ]
+                    // [-------------------------]
+                    // [P           LSFLMPPPPCPPP] with L: log item, S: store log size type, F: opt. file name pointer address, L: opt. line, M: opt. Mask, C: opt. size of parameters, P: opt. parameters
+                    StoreLogSizeType blank {};
+                    Log::logBuffer.saveType(blank); // This reserves the space for the storing the number of bytes used for the parameters in the buffer
+                }
             }
 #endif
 
@@ -1422,6 +1449,7 @@ namespace CompileTime
             va_end(argp);
             return *this;
         }
+        void reset() { buffer = nullptr; ptr = nullptr; allocSize = 0; }
     };
     template <typename T>
     bool logSpecifier(StackString & str, const char * spec, const std::size_t * size)
@@ -1437,8 +1465,14 @@ namespace CompileTime
     template <typename T>
     bool dumpLog(const T & func)
     {
+        Log::ScopedLock scope(Log::logBuffer.mutex); // Protect against multithread reading and writing to the log buffer
         // Fetch the log item first
         const uint32 readPos = Log::logBuffer.fetchReadPos();
+#if UseLogCompression == 1
+        // Make sure not to read (and remove) the last log position to avoid a writing process searching for the previous log and breaking next read
+        if (Log::logBuffer.lastLogPos <= readPos && (readPos < Log::logBuffer.fetchWritePos() || Log::logBuffer.fetchWritePos() < Log::logBuffer.lastLogPos)) return false;
+#endif
+
         Log::LogItem item;
         if (!Log::logBuffer.loadType(item)) return false;
 #ifdef StoreLogSizeType
@@ -1446,9 +1480,10 @@ namespace CompileTime
         if (!Log::logBuffer.loadType(blank)) return false;
 #endif
 
+
         // Check if we need to format file and line and mask first
         std::uintptr_t filePtr = 0;
-        std::size_t line = 0;
+        uint64 line = 0;
         uint32 mask = 0;
         if (item.FileDump && !Log::logBuffer.load(filePtr)) return false;
         if (item.LineDump && !Log::logBuffer.load(line)) return false;
@@ -1475,7 +1510,7 @@ namespace CompileTime
         if (item.Repeat && !item.Param)
         {
             StoreLogSizeType c = 0;
-            if (!Log::logBuffer.load(c)) return false;
+            if (!Log::logBuffer.loadType(c)) return false;
             count = c+1;
         }
         // And call the callback with that string
@@ -1487,11 +1522,12 @@ namespace CompileTime
 
         if (item.Param)
         {   // Now we have the repeated log, let's dump it from here directly
-            if (!Log::logBuffer.load(count)) return false;
+            StoreLogSizeType c = 0;
+            if (!Log::logBuffer.loadType(c)) return false;
             const uint32 argPos2 = Log::logBuffer.fetchReadPos();
-            StackString sizeCounter2{nullptr,0};
+            sizeCounter.reset();
             // Dump the log item to a invalid buffer to count the required allocation size
-            if (!dumpLogImpl(specCount, file, line, format, sizeCounter2)) return false;
+            if (!dumpLogImpl(specCount, file, line, format, sizeCounter)) return false;
 
             Log::logBuffer.rollback(argPos2);
             char * buffer2 = (char*)alloca(sizeCounter.allocSize + 1);
