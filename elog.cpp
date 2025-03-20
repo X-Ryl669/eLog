@@ -240,7 +240,8 @@ namespace CompileTime
         if (!Log::logBuffer.loadType(item)) return false;
         StoreLogSizeType size;
         if (!Log::logBuffer.loadType(size)) return false;
-        if (!item.Repeat) return Log::logBuffer.consume(size);
+        if (!Log::logBuffer.consume(size)) return false;
+        if (!item.Repeat) return true;
         if (item.Param)
         {   // Need to account for the additional parameters here until we're done with this log
             if (!Log::logBuffer.loadType(size)) return false;
