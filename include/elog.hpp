@@ -1184,7 +1184,9 @@ namespace CompileTime
             FileDump = loc ? 1 : 0;
             LineDump = saveLine ? 1 : 0;
             MaskType = mask < 4 ? mask : 3;
+#ifdef UseLogCompression
             Repeat = Param = 0;
+#endif
             saveFormat(str);
 
 #if defined(StoreLogSizeType) || UseLogCompression == 1
